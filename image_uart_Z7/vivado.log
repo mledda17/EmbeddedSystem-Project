@@ -1,0 +1,38 @@
+#-----------------------------------------------------------
+# Vivado v2019.1 (64-bit)
+# SW Build 2552052 on Fri May 24 14:49:42 MDT 2019
+# IP Build 2548770 on Fri May 24 18:01:18 MDT 2019
+# Start of session at: Tue Nov 14 11:43:07 2023
+# Process ID: 8224
+# Current directory: C:/Users/marco/Documents/Università/Embedded_systems/LAB2023/LAB2/image_uart_Z7
+# Command line: vivado.exe -gui_launcher_event rodinguilauncherevent2084 C:\Users\marco\Documents\Università\Embedded_systems\LAB2023\LAB2\image_uart_Z7\image_uart_Z7.xpr
+# Log file: C:/Users/marco/Documents/Università/Embedded_systems/LAB2023/LAB2/image_uart_Z7/vivado.log
+# Journal file: C:/Users/marco/Documents/Università/Embedded_systems/LAB2023/LAB2/image_uart_Z7\vivado.jou
+#-----------------------------------------------------------
+start_gui
+open_project C:/Users/marco/Documents/Università/Embedded_systems/LAB2023/LAB2/image_uart_Z7/image_uart_Z7.xpr
+INFO: [Project 1-313] Project file moved from '/home/gderiu/image_uart_Z7' since last save.
+Scanning sources...
+Finished scanning sources
+WARNING: [filemgmt 56-2] Board Part Repository Path: Could not find the directory 'C:/Users/marco/Documents/Università/Embedded_systems/LAB2023/LAB2/.Xilinx/Vivado/2019.1/xhub/board_store', nor could it be found using path 'C:/home/gderiu/.Xilinx/Vivado/2019.1/xhub/board_store'.
+CRITICAL WARNING: [Board 49-67] The board_part definition was not found for digilentinc.com:zybo-z7-10:part0:1.0. This can happen sometimes when you use custom board part. You can resolve this issue by setting 'board.repoPaths' parameter, pointing to the location of custom board files. Valid board_part values can be retrieved with the 'get_board_parts' Tcl command.
+INFO: [IP_Flow 19-234] Refreshing IP repositories
+INFO: [IP_Flow 19-1704] No user IP repositories specified
+INFO: [IP_Flow 19-2313] Loaded Vivado IP repository 'C:/Xilinx/Vivado/2019.1/data/ip'.
+WARNING: [BD 41-1661] One or more IPs have been locked in the design 'design_1.bd'. Please run report_ip_status for more details and recommendations on how to fix this issue.
+List of locked IPs:
+design_1_processing_system7_0_0
+
+open_project: Time (s): cpu = 00:00:13 ; elapsed = 00:00:11 . Memory (MB): peak = 742.652 ; gain = 81.527
+update_compile_order -fileset sources_1
+open_bd_design {C:/Users/marco/Documents/Università/Embedded_systems/LAB2023/LAB2/image_uart_Z7/image_uart_Z7.srcs/sources_1/bd/design_1/design_1.bd}
+INFO: [Common 17-41] Interrupt caught. Command should exit soon.
+Adding component instance block -- xilinx.com:ip:processing_system7:5.5 - processing_system7_0
+ERROR: [IP_Flow 19-883] Failed to create TCL scope '::ipgui_xilinx_com_signal_param_clock_1_0' for IP GUI
+ERROR: [IP_Flow 19-3428] Failed to create Customization object clock_temp
+ERROR: [IP_Flow 19-883] Failed to create TCL scope '::ipgui_xilinx_com_signal_param_reset_1_0' for IP GUI
+ERROR: [IP_Flow 19-3428] Failed to create Customization object reset_temp
+INFO: [BD 41-1808] Open Block Design has been cancelled.
+INFO: [Common 17-344] 'open_bd_design' was cancelled
+exit
+INFO: [Common 17-206] Exiting Vivado at Tue Nov 14 11:44:45 2023...

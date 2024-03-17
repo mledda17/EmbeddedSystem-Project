@@ -1,0 +1,489 @@
+/******************************************************************************
+*
+* Copyright (C) 2009 - 2014 Xilinx, Inc.  All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a copy
+* of this software and associated documentation files (the "Software"), to deal
+* in the Software without restriction, including without limitation the rights
+* to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+* copies of the Software, and to permit persons to whom the Software is
+* furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* Use of the Software is limited solely to applications:
+* (a) running on a Xilinx device, or
+* (b) that interact with a Xilinx device through a bus or interconnect.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+* XILINX  BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+* WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF
+* OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+* SOFTWARE.
+*
+* Except as contained in this notice, the name of the Xilinx shall not be used
+* in advertising or otherwise to promote the sale, use or other dealings in
+* this Software without prior written authorization from Xilinx.
+*
+******************************************************************************/
+
+/*
+ * helloworld.c: simple test application
+ *
+ * This application configures UART 16550 to baud rate 9600.
+ * PS7 UART (Zynq) is not initialized by this application, since
+ * bootrom/bsp configures it to baud rate 115200
+ *
+ * ------------------------------------------------
+ * | UART TYPE   BAUD RATE                        |
+ * ------------------------------------------------
+ *   uartns550   9600
+ *   uartlite    Configurable only in HW design
+ *   ps7_uart    115200 (configured by bootrom/bsp)
+ */
+
+
+/**
+ * Final Lab - Advanced Embedded Systems
+ *
+ * Student: Marco Ledda
+ * Matricola: 70/90/00471
+ *
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include "platform.h"
+#include <math.h>
+#include "xil_printf.h"
+#include "xuartps.h"
+#include <time.h>
+#include <arm_neon.h>
+#include "xtime_l.h"
+
+
+/** ! MACROs and Type Definition **/
+#define MEASUREMENTS 1
+#define NEON 0
+#define QF 8
+
+#if QF == 8 // 8.8 Mode
+typedef int16_t DATA;
+#elif QF == 7 // 1.7 Mode
+typedef int8_t DATA;
+#endif
+
+#define FIXED2FLOAT(a, qf) (((float) (a)) / (1<<qf))
+#define FLOAT2FIXED(a, qf) ((short int) round((a) * (1<<qf)))
+
+#define _MAX_ (1 << (sizeof(DATA)*8-1))-1
+#define _MIN_ -(_MAX_+1)
+
+#define IMAGE_SIZE 28*28
+#define N_WEIGHTS0 28*28
+#define N_WEIGHTS1 32
+#define N_WEIGHTS2 16
+#define N_BIAS0 32
+#define N_BIAS1 16
+#define N_BIAS2 10
+
+// DNN functions to compose your network
+void FC_forward(DATA* input, DATA* output, int in_s, int out_s, DATA* weights, DATA* bias, int qf);
+static inline long long int saturate(long long int mac);
+static inline void relu_forward(DATA* input, DATA* output, int size);
+int resultsProcessing(DATA* results, int size);
+
+// Reads a sequence of bytes and composes the DATA
+int16_t readDATA() {
+  u8 byte = 0;
+  int16_t data = 0;
+
+  // Read two bytes at time
+  for (int i = 0; i < 2; i++) {
+	byte = XUartPs_RecvByte(XPAR_PS7_UART_1_BASEADDR);
+	data += byte << ((i) * 8);
+  }
+
+  return data;
+}
+
+#if QF == 7
+// Through this function we convert 16-bits data to 8-bits data.
+// The underlying idea is similar to the saturation provided in the baseline project
+DATA toEightBits(int16_t data){
+	if (data > _MAX_) {
+		return _MAX_;
+	}
+
+	if (data < _MIN_) {
+		return _MIN_;
+	}
+
+	return data;
+}
+
+// This function works as a normalization. We are reporting data into the range [0 - 127]
+DATA normalization(int16_t data){
+	return (DATA)((data / 255.0) * 127.0);
+
+}
+
+#endif
+
+// This function is called every time we need an array
+// In case of 8.8 mode, we perform just a read of bytes.
+// In case of 1.7 mode, we first convert to 8 bits the data
+void createDataArray(DATA* array, int size){
+  for(int  i = 0; i < size; i++) {
+#if QF == 8
+	  array[i] = readDATA();
+#elif QF == 7
+	  array[i] = toEightBits(readDATA());
+#endif
+  }
+}
+
+// Create an image reading values from UART.
+void createImage(DATA* array, int size, int* t_receive){
+	u32 t_start = 0;
+
+	for (int i = 0; i < size; i++) {
+#if QF == 7
+		array[i] = normalization(readDATA());
+#elif QF == 8
+		array[i] = readDATA();
+#endif
+		if (i == 0 && MEASUREMENTS)
+			t_start = Xil_In32(GLOBAL_TMR_BASEADDR + GTIMER_COUNTER_LOWER_OFFSET);
+	}
+
+	if (MEASUREMENTS)
+		*t_receive = 2*(Xil_In32(GLOBAL_TMR_BASEADDR + GTIMER_COUNTER_LOWER_OFFSET) - t_start);
+}
+
+#if QF == 7 && NEON == 0
+
+void FC_forward_0(DATA* input, int16_t* output, int in_s, int out_s, DATA* weights, DATA* bias, int qf)
+{
+	int hkern = 0;
+	int wkern = 0;
+	long long int mac = 0;
+
+	for (hkern = 0; hkern < out_s; hkern++) {
+		mac = ((long long int)bias[hkern]) << qf;
+
+		for (wkern = 0; wkern < in_s; wkern++) {
+			mac += input[wkern] * weights[hkern*in_s + wkern];
+		}
+		output[hkern] = (int16_t)(mac >> qf);
+	}
+}
+
+void FC_forward(int16_t* input, int16_t* output, int in_s, int out_s, DATA* weights, DATA* bias, int qf)
+{
+	int hkern = 0;
+	int wkern = 0;
+	long long int mac = 0;
+
+	for (hkern = 0; hkern < out_s; hkern++) {
+		mac = ((long long int)bias[hkern]) << qf;
+
+		for (wkern = 0; wkern < in_s; wkern++) {
+			mac += input[wkern] * weights[hkern*in_s + wkern];
+		}
+		output[hkern] = (int16_t)(mac >> qf);
+	}
+}
+
+#elif NEON == 0 && QF == 8
+// This FC_forward is used when no optimization is performed. The final objective is to
+// compute a linear combination w*x + b where w is the weight vector, x is the current activation
+// and b is the vector of biases.
+void FC_forward(DATA* input, DATA* output, int in_s, int out_s, DATA* weights, DATA* bias, int qf)
+{
+	int hkern = 0;
+	int wkern = 0;
+	long long int mac = 0;
+
+	for (hkern = 0; hkern < out_s; hkern++) {
+		mac = ((long long int)bias[hkern]) << qf;
+
+		for (wkern = 0; wkern < in_s; wkern++) {
+			mac += input[wkern] * weights[hkern*in_s + wkern];
+		}
+		output[hkern] = (DATA)(mac >> qf);
+	}
+}
+
+#elif NEON == 1 && QF == 8
+
+// This is an attempt of FC_forward with intrinsic approach. The goal is the same, but we
+// exploit the functions provided by the NEON
+void FC_forward(DATA* input, DATA* output, int in_s, int out_s, DATA* weights, DATA* bias, int qf)
+{
+	int hkern = 0, wkern = 0;
+	long long int mac = 0;
+	int16x4_t va, vb;
+	int32x4_t sum_q;
+	int32x2_t tmp[2];
+
+	for (hkern = 0; hkern < out_s; hkern++) {
+		mac = ((long long int)bias[hkern]) << qf;
+		sum_q = vdupq_n_s32(0);
+
+		for (wkern = 0; wkern < (in_s & ~3); wkern+=4) {
+	        va = vld1_s16(&input[wkern]);
+	        vb = vld1_s16(&weights[hkern*in_s + wkern]);
+
+	        sum_q += vmull_s16(va, vb);
+		}
+
+		tmp[0] = vget_high_s32(sum_q);
+		tmp[1] = vget_low_s32(sum_q);
+		tmp[0] = vpadd_s32(tmp[0], tmp[1]);
+		tmp[0] = vpadd_s32(tmp[0], tmp[0]);
+
+		mac += vget_lane_s32(tmp[0], 0);
+		output[hkern] = (DATA)(mac >> qf);
+	}
+}
+#endif
+
+static inline long long int saturate(long long int mac)
+{
+	if(mac > _MAX_) {
+		//printf("[WARNING] Saturation.mac: %lld -> %llx _MAX_: %d  _MIN_: %d  res: %d\n",  mac, mac, _MAX_, _MIN_, _MAX_);
+		return _MAX_;
+	}
+
+	if(mac < _MIN_){
+		//printf( "[WARNING] Saturation. mac: %lld -> %llx _MAX_: %d  _MIN_: %d  res: %d\n",  mac, mac, _MAX_, _MIN_, _MIN_);
+		return _MIN_;
+	}
+
+	//printf("mac: %lld -> %llx _MAX_: %lld  _MIN_: %lld  res: %lld\n", mac, mac, _MAX_, _MIN_, mac);
+    return mac;
+}
+
+
+static inline void relu_forward(DATA* input, DATA* output, int size)
+{
+	for(int i = 0; i < size; i++) {
+		DATA v = input[i];
+		v = v > 0 ? v : 0;
+		output[i] = v;
+	}
+}
+
+// This function process the data returned by the Softmax Layer
+// It returns the classification label
+int resultsProcessing(DATA* results, int size)
+{
+	float* results_float = (float*)malloc(size * sizeof(float));
+
+	for (int i = 0; i < size; i++) {
+		results_float[i] = FIXED2FLOAT(results[i], QF);
+	}
+
+	int top0 = 0;
+	float topval = results_float[0];
+	for (int i = 1; i < size; i++) {
+		if (results_float[i] > topval) {
+		  top0 = i;
+		  topval = results_float[i];
+		}
+	}
+
+	free(results_float);
+
+	return top0;
+}
+
+int main()
+{
+	init_platform();
+
+	/** ! UART SETUP **/
+	u16 DeviceId_1= XPAR_PS7_UART_1_DEVICE_ID;
+	XUartPs Uart_1_PS;
+
+	// Try to retrieve DeviceId_1 configuration
+	XUartPs_Config *Config_1 = XUartPs_LookupConfig(DeviceId_1);
+	if (NULL == Config_1) {
+		return XST_FAILURE;
+	}
+
+	// Try to initialize UART
+	int Status_1 = XUartPs_CfgInitialize(&Uart_1_PS, Config_1, Config_1->BaseAddress);
+	if (Status_1 != XST_SUCCESS) {
+		return XST_FAILURE;
+	}
+
+	// Set the BAUD rate
+	u32 BaudRate = (u32)115200;
+	Status_1 = XUartPs_SetBaudRate(&Uart_1_PS, BaudRate);
+	if (Status_1 != (s32)XST_SUCCESS) {
+		return XST_FAILURE;
+	}
+
+	print("Started\n");
+
+	/** ! DATA DEFINITION **/
+#if QF == 8
+	// Image, Input and Output Arrays
+	DATA input[32], output[32];
+#elif QF == 7
+	int16_t input[32], output[32];
+#endif
+
+	DATA image[IMAGE_SIZE];
+
+	// Weights and Bias for FC0
+	DATA weights_FC0[N_BIAS0*N_WEIGHTS0];
+	DATA bias_FC0[N_BIAS0];
+
+	// Weights and Bias for FC1
+	DATA weights_FC1[N_BIAS1*N_WEIGHTS1];
+	DATA bias_FC1[N_BIAS1];
+
+	// Weights and Bias for FC2
+	DATA weights_FC2[N_BIAS2*N_WEIGHTS2];
+	DATA bias_FC2[N_BIAS2];
+
+	/** ! MEASUREMENT VARIABLES **/
+	u32 t_start;
+	int top;
+	int t_FC0, t_RELU0;
+	int t_FC1, t_RELU1;
+	int t_FC2;
+	int t_processing, t_receive, t_send, t_tot;
+
+	/** ! LOAD WEIGHTS AND BIAS **/
+	print("Waiting for Weights FC0\n");
+	createDataArray(weights_FC0, N_BIAS0*N_WEIGHTS0);
+	print("Waiting for Bias FC0\n");
+	createDataArray(bias_FC0, N_BIAS0);
+
+	print("Waiting for Weights FC1\n");
+	createDataArray(weights_FC1, N_BIAS1*N_WEIGHTS1);
+	xil_printf("Waiting for Bias FC1\n");
+	createDataArray(bias_FC1, N_BIAS1);
+
+	print("Waiting for Weights FC2\n");
+	createDataArray(weights_FC2, N_BIAS2*N_WEIGHTS2);
+	print("Waiting for Bias FC2\n");
+	createDataArray(bias_FC2, N_BIAS2);
+
+	while (1)
+	{
+		/** ! RECEIVING DIGIT TO CLASSIFY **/
+		print("Waiting for Image...\n");
+
+		createImage(image, IMAGE_SIZE, &t_receive);
+
+		if(MEASUREMENTS) {
+			printf("Number of execution clock cycle for receiving the image: %d\n", t_receive);
+			printf("Execution time for receiving the image: %.2f us\n", (float)t_receive / 667);
+			printf("Bit-rate of the image receiving: %d b/s\n\n", (int)IMAGE_SIZE*2*8 / (t_receive / XPAR_CPU_CORTEXA9_0_CPU_CLK_FREQ_HZ));
+		}
+
+		/** ! FIRST LAYER FORWARD **/
+		if(MEASUREMENTS) t_start = Xil_In32(GLOBAL_TMR_BASEADDR + GTIMER_COUNTER_LOWER_OFFSET);
+
+
+
+#if QF == 8
+		FC_forward(image, output, N_WEIGHTS0, N_BIAS0, weights_FC0, bias_FC0, QF);
+#elif QF == 7
+		FC_forward_0(image, output, N_WEIGHTS0, N_BIAS0, weights_FC0, bias_FC0, QF);
+#endif
+
+		if(MEASUREMENTS) {
+			t_FC0 = 2*(Xil_In32(GLOBAL_TMR_BASEADDR + GTIMER_COUNTER_LOWER_OFFSET) - t_start);
+			printf("Number of execution clock cycle for FC0: %d\n", t_FC0);
+			printf("Execution time for FC0: %.2lf us\n", (float)t_FC0 / 667);
+			printf("GOPS/s for FC0: %lf\n\n", (float)((N_WEIGHTS0 * N_BIAS0) / (t_FC0 / XPAR_CPU_CORTEXA9_0_CPU_CLK_FREQ_HZ)) / 1000000000);
+		}
+
+		/** ! FIRST LAYER RELU **/
+		if(MEASUREMENTS) t_start = Xil_In32(GLOBAL_TMR_BASEADDR + GTIMER_COUNTER_LOWER_OFFSET);
+
+		relu_forward(output, input, N_BIAS0);
+
+		if(MEASUREMENTS) {
+			t_RELU0 = 2*(Xil_In32(GLOBAL_TMR_BASEADDR + GTIMER_COUNTER_LOWER_OFFSET) - t_start);
+			printf("Number of execution clock cycle for RELU0: %d\n", t_RELU0);
+			printf("Execution time for RELU0: %.2f us\n\n", (float)t_RELU0 / 667);
+		}
+
+		/** ! SECOND LAYER FORWARD **/
+		if(MEASUREMENTS) t_start = Xil_In32(GLOBAL_TMR_BASEADDR + GTIMER_COUNTER_LOWER_OFFSET);
+
+		FC_forward(input, output, N_WEIGHTS1, N_BIAS1, weights_FC1, bias_FC1, QF);
+
+		if(MEASUREMENTS) {
+			t_FC1 = 2*(Xil_In32(GLOBAL_TMR_BASEADDR + GTIMER_COUNTER_LOWER_OFFSET) - t_start);
+			printf("Number of execution clock cycle for FC1: %d\n", t_FC1);
+			printf("Execution time for FC1: %.2f us\n", (float)t_FC1 / 667);
+			printf("GOPS/s for FC1: %f\n\n", (float)((N_WEIGHTS1 * N_BIAS1) / (t_FC1 / XPAR_CPU_CORTEXA9_0_CPU_CLK_FREQ_HZ)) / 1000000000);
+		}
+
+		/** ! SECOND LAYER RELU **/
+		if(MEASUREMENTS) t_start = Xil_In32(GLOBAL_TMR_BASEADDR + GTIMER_COUNTER_LOWER_OFFSET);
+
+		relu_forward(output, input, N_BIAS1);
+
+		if(MEASUREMENTS) {
+			t_RELU1 = 2*(Xil_In32(GLOBAL_TMR_BASEADDR + GTIMER_COUNTER_LOWER_OFFSET) - t_start);
+			printf("Number of execution clock cycle for RELU1: %d\n", t_RELU1);
+			printf("Execution time for RELU1: %.2f us\n\n", (float)t_RELU1 / 667);
+		}
+
+		print("\n\n");
+
+		/** ! LAST LAYER FORWARD **/
+		if(MEASUREMENTS) t_start = Xil_In32(GLOBAL_TMR_BASEADDR + GTIMER_COUNTER_LOWER_OFFSET);
+
+		FC_forward(input, output, N_WEIGHTS2, N_BIAS2, weights_FC2, bias_FC2, QF);
+
+		if(MEASUREMENTS) {
+			t_FC2 = 2*(Xil_In32(GLOBAL_TMR_BASEADDR + GTIMER_COUNTER_LOWER_OFFSET) - t_start);
+			printf("Number of execution clock cycle for FC2: %d\n", t_FC2);
+			printf("Execution time for FC2: %.2f us\n", (float)t_FC2 / 667);
+			printf("GOPS/s for FC2: %f\n\n", (float)((N_WEIGHTS2 * N_BIAS2) / (t_FC2 / XPAR_CPU_CORTEXA9_0_CPU_CLK_FREQ_HZ)) / 1000000000);
+		}
+
+		/** ! RESULT PROCESSING **/
+		if(MEASUREMENTS) t_start = Xil_In32(GLOBAL_TMR_BASEADDR + GTIMER_COUNTER_LOWER_OFFSET);
+
+		top = resultsProcessing(output, N_BIAS2);
+
+		if(MEASUREMENTS) {
+			t_processing = 2*(Xil_In32(GLOBAL_TMR_BASEADDR + GTIMER_COUNTER_LOWER_OFFSET) - t_start);
+			printf("Number of execution clock cycle for result processing: %d\n", t_processing);
+			printf("Execution time for result processing: %.2f us\n", (float)t_processing / 667);
+		}
+
+		if(MEASUREMENTS) t_start = Xil_In32(GLOBAL_TMR_BASEADDR + GTIMER_COUNTER_LOWER_OFFSET);
+
+		printf("Classification Label: %d\n", top);
+
+		if(MEASUREMENTS) {
+			t_send = 2*(Xil_In32(GLOBAL_TMR_BASEADDR + GTIMER_COUNTER_LOWER_OFFSET) - t_start);
+			printf("Number of execution clock cycles for the print: %d\n", t_send);
+			printf("Execution time for the print top: %.2f us\n", (float) t_send / 667);
+			printf("Bit-rate of the send operation: %d b/s\n", (int)16*8 / (t_send / XPAR_CPU_CORTEXA9_0_CPU_CLK_FREQ_HZ));
+
+			t_tot = t_receive + t_FC0 + t_RELU0 + t_FC1 + t_RELU1 + t_FC2 + t_processing + t_send;
+			printf("Number of execution clock cycles for the whole image classification: %d\n", t_tot);
+			printf("Execution time for the whole image classification: %.2f s\n", (float)t_tot / XPAR_CPU_CORTEXA9_0_CPU_CLK_FREQ_HZ);
+		}
+	}
+
+	cleanup_platform();
+
+	return 0;
+}

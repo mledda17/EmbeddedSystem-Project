@@ -1,0 +1,8 @@
+17:38:11 **** Incremental Build of configuration Debug for project image_dnn ****
+make pre-build main-build 
+a9-linaro-pre-build-step
+' '
+make: Nothing to be done for 'main-build'.
+
+17:38:11 Build Finished (took 179ms)
+
