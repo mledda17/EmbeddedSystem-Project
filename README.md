@@ -1,4 +1,4 @@
-# DNN-Based Image Classification on ARM (Zybo Board
+# DNN-Based Image Classification on ARM (Zybo Board)
 
 ## Overview
 This repository presents a comprehensive exploration into deploying a micro-service powered by a Deep Neural Network (DNN) for the classification of handwritten digits on the Zybo Z7 board. Designed for environments with limited computational and memory resources, this project demonstrates the potential of optimizing a neural network to efficiently classify images using binary files for weights, biases, and input images.
